@@ -1,7 +1,6 @@
 *.class
 *.log
 .bookmark
-docs/
 
 # sbt specific
 .cache/

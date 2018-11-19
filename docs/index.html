@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Slides</title>
+    <meta charset="utf-8">
+    <style>
+      @import url(https://fonts.googleapis.com/css?family=Yanone+Kaffeesatz);
+      @import url(https://fonts.googleapis.com/css?family=Droid+Serif:400,700,400italic);
+      @import url(https://fonts.googleapis.com/css?family=Ubuntu+Mono:400,700,400italic);
+
+      body { font-family: 'Droid Serif', 'Helvetica'; }
+      h1, h2, h3 {
+        font-family: 'Yanone Kaffeesatz', 'Gill Sans';
+        font-weight: normal;
+      }
+      .remark-code, .remark-inline-code { font-family: 'Ubuntu Mono', 'Consolas', 'Courier New'; }
+      img { max-width: 500px; }
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+
+
+
+class: center, middle
+
+<h1>http4s</h1>
+
+Mark de Jong
+
+---
+
+# Agenda
+
+1. http4s: What is it?
+2. http4s: A tale of types
+3. http4s: Middleware
+4. http4s: Modules
+5. http4s: Frontends
+
+---
+
+# http4s: What is it ?
+
+- It's a _minimal library_ for HTTP 1.x and 2.x
+- Descriptive and immutable types
+- Favors functional programming to gain composability and reasoning
+- Built-on fs2, a streaming library for handling large payloads in constant space
+
+---
+
+# http4s: A little sample
+
+```scala
+val helloWorldService = HttpRoutes.of[IO] {
+  case GET -> Root / "hello" / name =>
+    Ok(s"Hello, $name.")
+}
+
+val statusService = HttpRoutes.of[IO] {
+  case GET -> Root / "status" =>
+    Ok(s"Alive!")
+}
+
+val routes = (helloWorldService <+> statusService).orNotFound
+
+```
+
+```scala
+scala> routes.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
+res0: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 13))
+```
+
+```scala
+scala> routes.run(Request(Method.GET, Uri.uri("/status"))).unsafeRunSync()
+res1: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 6))
+```
+
+```scala
+scala> routes.run(Request(Method.GET, Uri.uri("/i-dont-exist"))).unsafeRunSync()
+res2: org.http4s.Response[cats.effect.IO] = Response(status=404, headers=Headers(Content-Type: text/plain; charset=UTF-8))
+```
+
+---
+
+# http4s: A tale of types
+
+### HttpRoutes companion object
+
+```scala
+def of[F[_]](pf: PartialFunction[Request[F], F[Response[F]]])(
+      implicit F: Sync[F]): HttpRoutes[F]
+```
+
+We need to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoutes`
+
+### HttpRoutes type
+
+```scala
+type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
+```
+
+---
+
+### Kleisli
+
+> Kleisli enables composition of functions that return a monadic value
+
+```scala
+final case class Kleisli[F[_], A, B](run: A => F[B])
+```
+
+It has all kinds of combinators like
+- `andThen`
+- `flatMap`
+- `traverse`
+
+As well it has all kinds of instances like
+- `Monad`
+- `SemigroupK`
+
+Why do we need this? *To work with effectful functions*
+
+---
+
+### OptionT
+
+> `OptionT[F[_], A]` is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
+
+It also has a `Monad` instance and as well a `SemigroupK` (will show in a minute).
+
+Why do we need this? *To model the fact that the Kleisli arrow is not total*
+
+---
+
+### SemigroupK
+
+> SemigroupK[F] allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
+
+```scala
+@typeclass trait SemigroupK[F[_]] { self =>
+  @simulacrum.op("<+>", alias = true)
+  def combineK[A](x: F[A], y: F[A]): F[A]
+}
+```
+
+Why do we need this? *To combine values of F[A]*
+
+
+---
+
+### SemigroupK for our Kleisli
+
+Remember our `HttpRoutes` ?
+
+```scala
+type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
+```
+
+Our `HttpRoutes` has a `SemigroupK` because `F` in `Kleisi[F, A, B]` has a `SemigroupK` instance:
+
+```scala
+scala> implicitly[SemigroupK[OptionT[IO, ?]]]
+res3: cats.SemigroupK[[β$0$]cats.data.OptionT[cats.effect.IO,β$0$]] = cats.data.OptionTInstances0$$anon$8@2b7ee9a8
+```
+
+We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
+---
+
+
+class: center, middle
+
+![Boom](https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif)
+
+---
+
+### http4s Middleware
+
+Included middleware
+
+- Authentication
+- Cross Origin Resource Sharing (CORS)
+- Response Compression (GZip)
+- Service Timeout
+- Jsonp
+- Virtual Host
+- Metrics
+
+---
+
+### http4s Modules
+
+Many Modules
+
+- Twirl
+- Circe
+- Argonaut
+- Json4s
+- Play-json
+- Scalatags
+- Scala-xml
+
+---
+
+### http4s Frontends
+
+Frontends are built upon the core foundation of http4s. It will only use the core types (`HttpRoutes`, `Request[F]`, `Response[F]`)
+
+Examples
+
+- http4s-dsl (Extractors which allow simple endpoints)
+- rho (A self documenting DSL built on http4s)
+- itinere (Define endpoints in a EDSL and derive Http4s server/client and OAS 3.0 docs)
+
+
+ </textarea>
+    <script src="remark-latest.min.js">
+    </script>
+    <script>
+      var slideshow = remark.create();
+    </script>
+  </body>
+</html>
