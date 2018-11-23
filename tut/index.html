@@ -40,26 +40,21 @@ Mark de Jong
 
 ---
 
-# Agenda
-
-1. http4s: What is it?
-2. http4s: A tale of types
-3. http4s: Middleware
-4. http4s: Modules
-5. http4s: Frontends
-
----
-
 # http4s: What is it ?
 
 - It's a _minimal library_ for HTTP 1.x and 2.x
+- Low dependency footprint and flexible setup
 - Descriptive and immutable types
 - Favors functional programming to gain composability and reasoning
 - Built-on fs2, a streaming library for handling large payloads in constant space
+- Modular and extensible design by using type classes
+- Multiple Frontends
 
 ---
 
 # http4s: A little sample
+
+This uses the http4s-dsl frontend/module (Scala extractors)
 
 ```tut:silent
 val helloWorldService = HttpRoutes.of[IO] {
@@ -90,6 +85,23 @@ routes.run(Request(Method.GET, Uri.uri("/i-dont-exist"))).unsafeRunSync()
 
 ---
 
+# http4s: Run it as a server
+
+```scala
+object Main extends IOApp {
+  def run(args: List[String]): IO[ExitCode] =
+    BlazeServerBuilder[IO]
+      .bindHttp(8080, "localhost")
+      .withHttpApp(routes)
+      .serve
+      .compile
+      .drain
+      .as(ExitCode.Success)
+}
+```
+
+---
+
 # http4s: A tale of types
 
 ### HttpRoutes companion object
@@ -107,9 +119,13 @@ We need to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoute
 type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
 ```
 
+- `F[_]` is the effect type (`cats.effect.IO` or scalaz-zio)
+- `Request[F]` is a HTTP request with a requesty body `fs2.Stream[F, Byte]`
+- `Response[F]` is a HTTP response with a response body `fs2.Stream[F, Byte]`
+
 ---
 
-### Kleisli
+# Kleisli
 
 > Kleisli enables composition of functions that return a monadic value
 
@@ -130,17 +146,28 @@ Why do we need this? *To work with effectful functions*
 
 ---
 
-### OptionT
+# OptionT
 
 > `OptionT[F[_], A]` is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
 
-It also has a `Monad` instance and as well a `SemigroupK` (will show in a minute).
+```scala
+final case class OptionT[F[_], A](value: F[Option[A]])
+```
+
+It has all kinds of combinators like
+- `flatMap`
+- `traverse`
+- `orElse`
+
+As well it has all kinds of instances like
+- `Monad`
+- `SemigroupK`
 
 Why do we need this? *To model the fact that the Kleisli arrow is not total*
 
 ---
 
-### SemigroupK
+# SemigroupK
 
 > SemigroupK[F] allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
 
@@ -156,7 +183,7 @@ Why do we need this? *To combine values of F[A]*
 
 ---
 
-### SemigroupK for our Kleisli
+# SemigroupK for our Kleisli
 
 Remember our `HttpRoutes` ?
 
@@ -173,6 +200,31 @@ implicitly[SemigroupK[OptionT[IO, ?]]]
 We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
 ---
 
+# SemigroupK for our Kleisli/OptionT
+
+### [OptionT](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/OptionT.scala#L443)
+
+```scala
+trait OptionTSemigroupK[F[_]] extends SemigroupK[OptionT[F, ?]] {
+  implicit def F: Monad[F]
+
+  def combineK[A](x: OptionT[F, A], y: OptionT[F, A]): OptionT[F, A] = x.orElse(y)
+}
+```
+
+### [Kleisli](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/Kleisli.scala#L410)
+
+```scala
+trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, ?]] {
+  implicit def F: SemigroupK[F]
+
+  override def combineK[B](x: Kleisli[F, A, B], y: Kleisli[F, A, B]): Kleisli[F, A, B] =
+    Kleisli(a => F.combineK(x.run(a), y.run(a)))
+}
+```
+
+---
+
 
 class: center, middle
 
@@ -180,7 +232,7 @@ class: center, middle
 
 ---
 
-### http4s Middleware
+# http4s Middleware
 
 Included middleware
 
@@ -194,7 +246,38 @@ Included middleware
 
 ---
 
-### http4s Modules
+# http4s Modularity through type classes
+
+#### Definition in http4s for `EntityEncoder` type class
+
+```scala
+final case class Entity[+F[_]](body: fs2.Stream[F, Byte], length: Option[Long] = None)
+
+trait EntityEncoder[F[_], A] {
+  def toEntity(a: A): Entity[F]
+  def headers: Headers
+
+  // etc ..
+}
+```
+
+#### Twirl `EntityEncoder`
+
+```scala
+implicit def xmlContentEncoder[F[_]](implicit C: Charset): EntityEncoder[F, Xml] =
+  contentEncoder(MediaType.application.xml)
+
+def contentEncoder[F[_], C <: Content](mediaType: MediaType)
+                                      (implicit C: Charset): EntityEncoder[F, C] =
+  EntityEncoder
+    .stringEncoder[F]
+    .contramap[C](content => content.body)
+    .withContentType(`Content-Type`(mediaType, charset))
+```
+
+---
+
+# http4s Modularity through type classes
 
 Many Modules
 
@@ -208,7 +291,7 @@ Many Modules
 
 ---
 
-### http4s Frontends
+# http4s Frontends
 
 Frontends are built upon the core foundation of http4s. It will only use the core types (`HttpRoutes`, `Request[F]`, `Response[F]`)
 
@@ -218,6 +301,63 @@ Examples
 - rho (A self documenting DSL built on http4s)
 - itinere (Define endpoints in a EDSL and derive Http4s server/client and OAS 3.0 docs)
 
+---
+
+# http4s Frontends - examples
+
+### rho
+
+```scala
+val httpService = new RhoService[IO] {
+   GET / "hello" / 'world +? param[Int]("fav") |>> { (world: String, fav: Int) =>
+     Ok(s"Received $fav, $world")
+   }
+}
+```
+
+---
+
+# http4s Frontends - examples
+
+### itinere
+
+```scala
+endpoint(
+  request(
+    HttpMethod.POST, path / "subcontractors" / "applications",
+    entity = jsonRequest(jsonSubcontractorApplication)
+  ),
+  anyOf
+    .opt(
+      response(HttpStatus.Ok, "Returned on successful interaction",
+      entity = jsonResponse(jsonCourierResultSuccess(Json.string)))
+    )
+    .opt(
+      response(HttpStatus.BadRequest, "Returned when there are input errors",
+      entity = jsonResponse(jsonCourierResultValidationErrors))
+    )
+    .as[CourierResult[String]],
+  EndpointCategory.subcontractors,
+  "Endpoint for applying as a subcontractor"
+)
+```
+
+---
+
+# Fin
+
+### Slides
+[http://fristi.github.com/http4s-deck](http://fristi.github.com/http4s-deck)
+
+### Libraries mentioned
+- http4s at [https://http4s.org/](https://http4s.org/)
+- cats at [https://typelevel.org/cats/](https://typelevel.org/cats/)
+- cats-effect at [https://typelevel.org/cats-effect/](https://typelevel.org/cats-effect/)
+- fs2 at [http://fs2.io/](http://fs2.io/)
+
+### Find me at
+- Twitter [https://twitter.com/mark_dj](https://twitter.com/mark_dj)
+- Github [https://github.com/Fristi](https://github.com/fristi)
 
  </textarea>
     <script src="remark-latest.min.js">
