@@ -21,7 +21,7 @@
     <textarea id="source">
 
 ```tut:invisible
-import org.http4s._, org.http4s.dsl.io._, org.http4s.implicits._
+import org.http4s._, org.http4s.dsl.io._, org.http4s.implicits._, org.http4s.server._
 import cats._
 import cats.data._
 import cats.implicits._
@@ -48,7 +48,9 @@ Mark de Jong
 - Favors functional programming to gain composability and reasoning
 - Built-on fs2, a streaming library for handling large payloads in constant space
 - Modular and extensible design by using type classes
-- Multiple Frontends
+- Multiple frontends
+- Testing is easy (no tests kits needed!)
+- Integrates well with Typelevel ecosystem
 
 ---
 
@@ -102,133 +104,26 @@ object Main extends IOApp {
 
 ---
 
-# http4s: A tale of types
-
-### HttpRoutes companion object
+# http4s Request/response
 
 ```scala
-def of[F[_]](pf: PartialFunction[Request[F], F[Response[F]]])(
-      implicit F: Sync[F]): HttpRoutes[F]
+case class Request[F[_]](
+    method: Method = Method.GET,
+    uri: Uri = Uri(path = "/"),
+    httpVersion: HttpVersion = HttpVersion.`HTTP/1.1`,
+    headers: Headers = Headers.empty,
+    body: fs2.Stream[F, Byte] = EmptyBody,
+    attributes: AttributeMap = AttributeMap.empty
+)
+
+case class Response[F[_]](
+    status: Status = Status.Ok,
+    httpVersion: HttpVersion = HttpVersion.`HTTP/1.1`,
+    headers: Headers = Headers.empty,
+    body: fs2.Stream[F, Byte] = EmptyBody,
+    attributes: AttributeMap = AttributeMap.empty)
+
 ```
-
-We need to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoutes`
-
-### HttpRoutes type
-
-```scala
-type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
-```
-
-- `F[_]` is the effect type (`cats.effect.IO` or scalaz-zio)
-- `Request[F]` is a HTTP request with a requesty body `fs2.Stream[F, Byte]`
-- `Response[F]` is a HTTP response with a response body `fs2.Stream[F, Byte]`
-
----
-
-# Kleisli
-
-> Kleisli enables composition of functions that return a monadic value
-
-```scala
-final case class Kleisli[F[_], A, B](run: A => F[B])
-```
-
-It has all kinds of combinators like
-- `andThen`
-- `flatMap`
-- `traverse`
-
-As well it has all kinds of instances like
-- `Monad`
-- `SemigroupK`
-
-Why do we need this? *To work with effectful functions*
-
----
-
-# OptionT
-
-> `OptionT[F[_], A]` is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
-
-```scala
-final case class OptionT[F[_], A](value: F[Option[A]])
-```
-
-It has all kinds of combinators like
-- `flatMap`
-- `traverse`
-- `orElse`
-
-As well it has all kinds of instances like
-- `Monad`
-- `SemigroupK`
-
-Why do we need this? *To model the fact that the Kleisli arrow is not total*
-
----
-
-# SemigroupK
-
-> SemigroupK[F] allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
-
-```scala
-@typeclass trait SemigroupK[F[_]] { self =>
-  @simulacrum.op("<+>", alias = true)
-  def combineK[A](x: F[A], y: F[A]): F[A]
-}
-```
-
-Why do we need this? *To combine values of F[A]*
-
-
----
-
-# SemigroupK for our Kleisli
-
-Remember our `HttpRoutes` ?
-
-```scala
-type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
-```
-
-Our `HttpRoutes` has a `SemigroupK` because `F` in `Kleisi[F, A, B]` has a `SemigroupK` instance:
-
-```tut
-implicitly[SemigroupK[OptionT[IO, ?]]]
-```
-
-We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
----
-
-# SemigroupK for our Kleisli/OptionT
-
-### [OptionT](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/OptionT.scala#L443)
-
-```scala
-trait OptionTSemigroupK[F[_]] extends SemigroupK[OptionT[F, ?]] {
-  implicit def F: Monad[F]
-
-  def combineK[A](x: OptionT[F, A], y: OptionT[F, A]): OptionT[F, A] = x.orElse(y)
-}
-```
-
-### [Kleisli](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/Kleisli.scala#L410)
-
-```scala
-trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, ?]] {
-  implicit def F: SemigroupK[F]
-
-  override def combineK[B](x: Kleisli[F, A, B], y: Kleisli[F, A, B]): Kleisli[F, A, B] =
-    Kleisli(a => F.combineK(x.run(a), y.run(a)))
-}
-```
-
----
-
-
-class: center, middle
-
-![Boom](https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif)
 
 ---
 
@@ -341,6 +236,172 @@ endpoint(
   "Endpoint for applying as a subcontractor"
 )
 ```
+
+---
+
+class: center, middle
+
+<h1>A tale of types</h1>
+
+Deep dive!
+
+---
+
+# http4s: A tale of types
+
+### HttpRoutes companion object
+
+```scala
+def of[F[_]](pf: PartialFunction[Request[F], F[Response[F]]])(
+      implicit F: Sync[F]): HttpRoutes[F]
+```
+
+We need to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoutes`
+
+### HttpRoutes type
+
+```scala
+type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
+```
+
+- `F[_]` is the effect type (`cats.effect.IO` or scalaz-zio)
+- `Request[F]` is a HTTP request with a requesty body `fs2.Stream[F, Byte]`
+- `Response[F]` is a HTTP response with a response body `fs2.Stream[F, Byte]`
+
+---
+
+# Kleisli
+
+> Kleisli enables composition of functions that return a monadic value
+
+```scala
+final case class Kleisli[F[_], A, B](run: A => F[B])
+```
+
+It has all kinds of combinators like
+- `andThen`
+- `flatMap`
+- `traverse`
+
+As well it has all kinds of instances like
+- `Monad`
+- `SemigroupK`
+
+Why do we need this? *To work with effectful functions*
+
+---
+
+# Kleisli : why?
+
+To enable middleware!
+
+```scala
+type Middleware[F[_], A, B, C, D] = Kleisli[F, A, B] => Kleisli[F, C, D]
+type HttpMiddleware[F[_]] =
+    Middleware[OptionT[F, ?], Request[F], Response[F], Request[F], Response[F]]
+```
+
+```tut:silent
+val printlnRequest: HttpMiddleware[IO] = outer => Kleisli { req =>
+  OptionT.liftF(IO.delay(println(s"Tracing request ${req.method} ${req.uri}"))) *>
+    outer.run(req)
+}
+
+val router = printlnRequest(helloWorldService <+> statusService).orNotFound
+
+```
+
+```tut
+router.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
+```
+
+Hint: middleware does compose through function composition :-)
+
+---
+
+# OptionT
+
+> `OptionT[F[_], A]` is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
+
+```scala
+final case class OptionT[F[_], A](value: F[Option[A]])
+```
+
+It has all kinds of combinators like
+- `flatMap`
+- `traverse`
+- `orElse`
+
+As well it has all kinds of instances like
+- `Monad`
+- `SemigroupK`
+
+Why do we need this? *To model the fact that the Kleisli arrow is not total*
+
+---
+
+# SemigroupK
+
+> SemigroupK[F] allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
+
+```scala
+@typeclass trait SemigroupK[F[_]] { self =>
+  @simulacrum.op("<+>", alias = true)
+  def combineK[A](x: F[A], y: F[A]): F[A]
+}
+```
+
+Why do we need this? *To combine values of F[A]*
+
+
+---
+
+# SemigroupK for our Kleisli
+
+Remember our `HttpRoutes` ?
+
+```scala
+type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
+```
+
+Our `HttpRoutes` has a `SemigroupK` because `F` in `Kleisi[F, A, B]` has a `SemigroupK` instance:
+
+```tut
+implicitly[SemigroupK[OptionT[IO, ?]]]
+```
+
+We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
+---
+
+# SemigroupK for our Kleisli/OptionT
+
+### [OptionT](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/OptionT.scala#L443)
+
+```scala
+trait OptionTSemigroupK[F[_]] extends SemigroupK[OptionT[F, ?]] {
+  implicit def F: Monad[F]
+
+  def combineK[A](x: OptionT[F, A], y: OptionT[F, A]): OptionT[F, A] = x.orElse(y)
+}
+```
+
+### [Kleisli](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/Kleisli.scala#L410)
+
+```scala
+trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, ?]] {
+  implicit def F: SemigroupK[F]
+
+  override def combineK[B](x: Kleisli[F, A, B], y: Kleisli[F, A, B]): Kleisli[F, A, B] =
+    Kleisli(a => F.combineK(x.run(a), y.run(a)))
+}
+```
+
+---
+
+
+class: center, middle
+
+![Boom](https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif)
 
 ---
 
