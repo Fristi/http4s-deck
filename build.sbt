@@ -41,8 +41,8 @@ scalacOptions ++= Seq(
   "-Ywarn-numeric-widen" // Warn when numerics are widened.
 )
 libraryDependencies ++= Seq(
-  "org.http4s" %% "http4s-blaze-server" % "0.20.0-M3",
-  "org.http4s" %% "http4s-dsl" % "0.20.0-M3"
+  "org.http4s" %% "http4s-blaze-server" % "0.20.0-M5",
+  "org.http4s" %% "http4s-dsl" % "0.20.0-M5"
 )
 
 tutSourceDirectory := baseDirectory.value / "tut"

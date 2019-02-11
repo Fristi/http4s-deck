@@ -31,6 +31,33 @@ Mark de Jong
 
 ---
 
+# whoami?
+
+<img src="http://vectos.net/img/logo.png" align="right" />
+
+## Mark de Jong
+- Freelance software consultant
+- Functional programming enthusiast
+- Open source contributor
+- Likes to build web-apps for businesses :-)
+
+### Find me at
+- Twitter [https://twitter.com/mark_dj](https://twitter.com/mark_dj)
+- Github [https://github.com/Fristi](https://github.com/fristi)
+
+---
+
+# Agenda
+
+- What is it?
+- Minimal example
+- Middleware
+- Frontends and backends
+- Modularity through type classes
+- Deep dive into the internals
+
+---
+
 # http4s: What is it ?
 
 - It's a _minimal library_ for HTTP 1.x and 2.x
@@ -41,11 +68,17 @@ Mark de Jong
 - Modular and extensible design by using type classes
 - Multiple frontends
 - Testing is easy (no tests kits needed!)
-- Integrates well with Typelevel ecosystem
+- Integrates well with the Typelevel ecosystem
 
 ---
 
-# http4s: A little sample
+class: center, middle
+
+<h1>Minimal example</h1>
+
+---
+
+# http4s: Minimal example
 
 This uses the http4s-dsl frontend/module (Scala extractors)
 
@@ -81,23 +114,6 @@ res2: org.http4s.Response[cats.effect.IO] = Response(status=404, headers=Headers
 
 ---
 
-# http4s: Run it as a server
-
-```scala
-object Main extends IOApp {
-  def run(args: List[String]): IO[ExitCode] =
-    BlazeServerBuilder[IO]
-      .bindHttp(8080, "localhost")
-      .withHttpApp(routes)
-      .serve
-      .compile
-      .drain
-      .as(ExitCode.Success)
-}
-```
-
----
-
 # http4s Request/response
 
 ```scala
@@ -121,6 +137,29 @@ case class Response[F[_]](
 
 ---
 
+# http4s: Run it as a server
+
+```scala
+object Main extends IOApp {
+  def run(args: List[String]): IO[ExitCode] =
+    BlazeServerBuilder[IO]
+      .bindHttp(8080, "localhost")
+      .withHttpApp(routes)
+      .serve
+      .compile
+      .drain
+      .as(ExitCode.Success)
+}
+```
+
+---
+
+class: center, middle
+
+<h1>Middleware</h1>
+
+---
+
 # http4s Middleware
 
 Included middleware
@@ -140,13 +179,11 @@ Included middleware
 #### Definition in http4s for `EntityEncoder` type class
 
 ```scala
-final case class Entity[+F[_]](body: fs2.Stream[F, Byte], length: Option[Long] = None)
+final case class Entity[+F[_]](body: fs2.Stream[F, Byte], length: Option[Long])
 
 trait EntityEncoder[F[_], A] {
   def toEntity(a: A): Entity[F]
   def headers: Headers
-
-  // etc ..
 }
 ```
 
@@ -180,6 +217,18 @@ Many Modules
 
 ---
 
+class: center, middle
+
+<h1>Frontends and backends</h1>
+
+---
+
+class: center, middle
+
+<h1>Frontends?</h1>
+
+---
+
 # http4s Frontends
 
 Frontends are built upon the core foundation of http4s. It will only use the core types (`HttpRoutes`, `Request[F]`, `Response[F]`)
@@ -188,7 +237,6 @@ Examples
 
 - http4s-dsl (Extractors which allow simple endpoints)
 - rho (A self documenting DSL built on http4s)
-- itinere (Define endpoints in a EDSL and derive Http4s server/client and OAS 3.0 docs)
 
 ---
 
@@ -203,45 +251,41 @@ val httpService = new RhoService[IO] {
    }
 }
 ```
+---
+
+class: center, middle
+
+<h1>Backends?</h1>
 
 ---
 
-# http4s Frontends - examples
+# http4s Backends
 
-### itinere
-
-```scala
-endpoint(
-  request(
-    HttpMethod.POST, path / "subcontractors" / "applications",
-    entity = jsonRequest(jsonSubcontractorApplication)
-  ),
-  anyOf
-    .opt(
-      response(HttpStatus.Ok, "Returned on successful interaction",
-      entity = jsonResponse(jsonCourierResultSuccess(Json.string)))
-    )
-    .opt(
-      response(HttpStatus.BadRequest, "Returned when there are input errors",
-      entity = jsonResponse(jsonCourierResultValidationErrors))
-    )
-    .as[CourierResult[String]],
-  EndpointCategory.subcontractors,
-  "Endpoint for applying as a subcontractor"
-)
-```
+- TODO: Netty
+- TODO: Blaze
+- TODO: Tech empower up
 
 ---
 
 class: center, middle
 
-<h1>A tale of types</h1>
+<h1>Deep dive!</h1>
 
-Deep dive!
+Internals of http4s
 
 ---
 
 # http4s: A tale of types
+
+### HttpRoutes type (simplified)
+
+```scala
+type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
+```
+
+- `F[_]` is the effect type (`cats.effect.IO`, monix `Task` or scalaz-zio)
+- `Request[F]` is a HTTP request with a request body `fs2.Stream[F, Byte]`
+- `Response[F]` is a HTTP response with a response body `fs2.Stream[F, Byte]`
 
 ### HttpRoutes companion object
 
@@ -250,17 +294,10 @@ def of[F[_]](pf: PartialFunction[Request[F], F[Response[F]]])(
       implicit F: Sync[F]): HttpRoutes[F]
 ```
 
-We need to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoutes`
+`of` needs to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoutes`. So how?
 
-### HttpRoutes type
-
-```scala
-type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
-```
-
-- `F[_]` is the effect type (`cats.effect.IO` or scalaz-zio)
-- `Request[F]` is a HTTP request with a requesty body `fs2.Stream[F, Byte]`
-- `Response[F]` is a HTTP response with a response body `fs2.Stream[F, Byte]`
+- TODO: why do we need this translation?
+- TODO: refresher of a `PartialFunction`
 
 ---
 
@@ -277,41 +314,10 @@ It has all kinds of combinators like
 - `flatMap`
 - `traverse`
 
-As well it has all kinds of instances like
-- `Monad`
-- `SemigroupK`
+As well it has all kinds of instances like `Monad` and most importantly **SemigroupK**
 
-Why do we need this? *To work with effectful functions*
-
----
-
-# Kleisli : why?
-
-To enable middleware!
-
-```scala
-type Middleware[F[_], A, B, C, D] = Kleisli[F, A, B] => Kleisli[F, C, D]
-type HttpMiddleware[F[_]] =
-    Middleware[OptionT[F, ?], Request[F], Response[F], Request[F], Response[F]]
-```
-
-```scala
-val printlnRequest: HttpMiddleware[IO] = outer => Kleisli { req =>
-  OptionT.liftF(IO.delay(println(s"Tracing request ${req.method} ${req.uri}"))) *>
-    outer.run(req)
-}
-
-val router = printlnRequest(helloWorldService <+> statusService).orNotFound
-
-```
-
-```scala
-scala> router.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
-Tracing request GET /hello/world
-res3: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 13))
-```
-
-Hint: middleware does compose through function composition :-)
+#### Why?
+*To work with effectful functions*
 
 ---
 
@@ -328,11 +334,10 @@ It has all kinds of combinators like
 - `traverse`
 - `orElse`
 
-As well it has all kinds of instances like
-- `Monad`
-- `SemigroupK`
+As well it has all kinds of instances like `Monad` and most importantly **SemigroupK**
 
-Why do we need this? *To model the fact that the Kleisli arrow is not total*
+#### Why?
+*To model the fact that the Kleisli arrow is not total*
 
 ---
 
@@ -364,7 +369,7 @@ Our `HttpRoutes` has a `SemigroupK` because `F` in `Kleisi[F, A, B]` has a `Semi
 
 ```scala
 scala> implicitly[SemigroupK[OptionT[IO, ?]]]
-res4: cats.SemigroupK[[β$0$]cats.data.OptionT[cats.effect.IO,β$0$]] = cats.data.OptionTInstances0$$anon$8@5be3eaf5
+res3: cats.SemigroupK[[β$0$]cats.data.OptionT[cats.effect.IO,β$0$]] = cats.data.OptionTInstances0$$anon$8@4523eab9
 ```
 
 We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
@@ -395,10 +400,44 @@ trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, ?]] {
 
 ---
 
+### Example of everything together
+
+- TODO: Show it
+
+---
+
 
 class: center, middle
 
 ![Boom](https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif)
+
+---
+
+# Kleisli middleware
+
+```scala
+type Middleware[F[_], A, B, C, D] = Kleisli[F, A, B] => Kleisli[F, C, D]
+type HttpMiddleware[F[_]] =
+    Middleware[OptionT[F, ?], Request[F], Response[F], Request[F], Response[F]]
+```
+
+```scala
+val printlnRequest: HttpMiddleware[IO] = outer => Kleisli { req =>
+  OptionT.liftF(IO.delay(println(s"Tracing request ${req.method} ${req.uri}"))) *>
+    outer.run(req)
+}
+
+val router = printlnRequest(helloWorldService <+> statusService).orNotFound
+
+```
+
+```scala
+scala> router.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
+Tracing request GET /hello/world
+res4: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 13))
+```
+
+Hint: middleware does compose through function composition :-)
 
 ---
 
@@ -412,10 +451,6 @@ class: center, middle
 - cats at [https://typelevel.org/cats/](https://typelevel.org/cats/)
 - cats-effect at [https://typelevel.org/cats-effect/](https://typelevel.org/cats-effect/)
 - fs2 at [http://fs2.io/](http://fs2.io/)
-
-### Find me at
-- Twitter [https://twitter.com/mark_dj](https://twitter.com/mark_dj)
-- Github [https://github.com/Fristi](https://github.com/fristi)
 
  </textarea>
     <script src="remark-latest.min.js">
