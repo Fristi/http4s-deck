@@ -39,7 +39,6 @@ Mark de Jong
 - Freelance software consultant
 - Functional programming enthusiast
 - Open source contributor
-- Likes to build web-apps for businesses :-)
 
 ### Find me at
 - Twitter [https://twitter.com/mark_dj](https://twitter.com/mark_dj)
@@ -51,24 +50,46 @@ Mark de Jong
 
 - What is it?
 - Minimal example
-- Middleware
 - Frontends and backends
-- Modularity through type classes
+- Extensiblity through type classes
 - Deep dive into the internals
+  - Routing
+  - Middleware
+  - Streaming
 
 ---
 
 # http4s: What is it ?
 
-- It's a _minimal library_ for HTTP 1.x and 2.x
+- It's a _minimal library_ for serving HTTP 1.x and 2.x requests!
 - Low dependency footprint and flexible setup
 - Descriptive and immutable types
 - Favors functional programming to gain composability and reasoning
-- Built-on fs2, a streaming library for handling large payloads in constant space
-- Modular and extensible design by using type classes
-- Multiple frontends
 - Testing is easy (no tests kits needed!)
-- Integrates well with the Typelevel ecosystem
+
+---
+
+# cats
+
+> lightweight, modular, and extensible library for functional programming
+
+TODO
+
+---
+
+# cats-effect
+
+> a set of typeclasses which characterize general effect types
+
+TODO
+
+---
+
+# fs2
+
+> a streaming library for handling large payloads in constant space
+
+TODO
 
 ---
 
@@ -88,28 +109,36 @@ val helloWorldService = HttpRoutes.of[IO] {
     Ok(s"Hello, $name.")
 }
 
-val statusService = HttpRoutes.of[IO] {
-  case GET -> Root / "status" =>
-    Ok(s"Alive!")
-}
+val routes = helloWorldService.orNotFound
 
-val routes = (helloWorldService <+> statusService).orNotFound
+```
+---
 
+# http4s: Minimal example
+
+```scala
+val resp1 = routes.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
+```
+```scala
+scala> resp1.status
+res0: org.http4s.Status = 200 OK
+
+scala> resp1.headers
+res1: org.http4s.Headers = Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 13)
+
+scala> resp1.as[String].unsafeRunSync()
+res2: String = Hello, world.
 ```
 
 ```scala
-scala> routes.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
-res0: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 13))
+val resp2 = routes.run(Request(Method.GET, Uri.uri("/i-dont-exist"))).unsafeRunSync()
 ```
-
 ```scala
-scala> routes.run(Request(Method.GET, Uri.uri("/status"))).unsafeRunSync()
-res1: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 6))
-```
+scala> resp2.status
+res3: org.http4s.Status = 404 Not Found
 
-```scala
-scala> routes.run(Request(Method.GET, Uri.uri("/i-dont-exist"))).unsafeRunSync()
-res2: org.http4s.Response[cats.effect.IO] = Response(status=404, headers=Headers(Content-Type: text/plain; charset=UTF-8))
+scala> resp2.headers
+res4: org.http4s.Headers = Headers(Content-Type: text/plain; charset=UTF-8)
 ```
 
 ---
@@ -174,38 +203,124 @@ Included middleware
 
 ---
 
-# http4s Modularity through type classes
+class: center, middle
 
-#### Definition in http4s for `EntityEncoder` type class
+<h1>Extensiblity</h1>
+
+---
+
+# http4s Extensiblity through type classes
+
+### Two essential type classes
+
+- `EntityEncoder` for encoding responses like HTML, JSON, XML, etc
+- `EntityDecoder` for decoding requests like form-encoded, JSON, XML, etc
+
+### Common practice in functional programming
+
+- Define a type class
+- Create instances of other type classes like `Contravariant`, `SemigroupK`, `Monoid`, etc
+
+---
+
+class: center, middle
+
+<h1>EntityEncoder</h1>
+
+---
+
+# `EntityEncoder` type class
+
+### Definition (simpified)
 
 ```scala
 final case class Entity[+F[_]](body: fs2.Stream[F, Byte], length: Option[Long])
-
 trait EntityEncoder[F[_], A] {
   def toEntity(a: A): Entity[F]
   def headers: Headers
 }
 ```
 
-#### Twirl `EntityEncoder`
+### Noteable instance: `Contravariant`
 
 ```scala
-implicit def xmlContentEncoder[F[_]](implicit C: Charset): EntityEncoder[F, Xml] =
+implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, ?]] =
+  new Contravariant[EntityEncoder[F, ?]] {
+    def contramap[A, B](r: EntityEncoder[F, A])(f: (B) => A): EntityEncoder[F, B] =
+      new EntityEncoder[F, B] {
+        def toEntity(a: B): Entity[F] = r.toEntity(f(a))
+        def headers: Headers = r.headers
+      }
+  }
+```
+
+---
+
+# Twirl `EntityEncoder`
+
+```scala
+implicit def xmlContentEncoder[F[_]](implicit charset: Charset): EntityEncoder[F, Xml] =
   contentEncoder(MediaType.application.xml)
 
 def contentEncoder[F[_], C <: Content](mediaType: MediaType)
-                                      (implicit C: Charset): EntityEncoder[F, C] =
+                                      (implicit charset: Charset): EntityEncoder[F, C] =
   EntityEncoder
     .stringEncoder[F]
-    .contramap[C](content => content.body)
+    .contramap[C](_.body)
     .withContentType(`Content-Type`(mediaType, charset))
 ```
 
 ---
 
-# http4s Modularity through type classes
+class: center, middle
 
-Many Modules
+<h1>EntityDecoder</h1>
+
+---
+
+
+# `EntityDecoder` type class
+
+### Definition (simpified)
+
+```scala
+trait EntityDecoder[F[_], T] { self =>
+  def decode(msg: Request[F], strict: Boolean): EitherT[F, DecodeFailure, T]
+  def consumes: Set[MediaRange]
+}
+```
+
+Noteable instance: `SemigroupK`
+
+---
+
+# UrlForm `EntityDecoder`
+
+### Definition (simpified)
+
+```scala
+case class UrlForm (values: Map[String, List[String]])
+
+def decodeString(charset: Charset)(urlForm: String): Either[MalformedMessageBodyFailure, UrlForm] =
+  ??? //omitted urlencoded parsing
+
+implicit def entityDecoder[F[_] : Monad](defaultCharset: Charset): EntityDecoder[F, UrlForm] =
+  EntityDecoder.decodeBy(MediaType.application.`x-www-form-urlencoded`) { m =>
+    EitherT(
+      EntityDecoder
+        .decodeString(m) // folds the `fs.stream[F, Byte]` into a F[String]
+        .map(decodeString(m.charset.getOrElse(defaultCharset)))
+    )
+  }
+```
+
+---
+
+
+
+# http4s Extensible through type classes
+
+Many Modules already provided
 
 - Twirl
 - Circe
@@ -369,7 +484,7 @@ Our `HttpRoutes` has a `SemigroupK` because `F` in `Kleisi[F, A, B]` has a `Semi
 
 ```scala
 scala> implicitly[SemigroupK[OptionT[IO, ?]]]
-res3: cats.SemigroupK[[β$0$]cats.data.OptionT[cats.effect.IO,β$0$]] = cats.data.OptionTInstances0$$anon$8@4523eab9
+res5: cats.SemigroupK[[β$0$]cats.data.OptionT[cats.effect.IO,β$0$]] = cats.data.OptionTInstances0$$anon$8@60ae7475
 ```
 
 We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
@@ -433,8 +548,9 @@ val router = printlnRequest(helloWorldService <+> statusService).orNotFound
 
 ```scala
 scala> router.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
-Tracing request GET /hello/world
-res4: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 13))
+<console>:40: error: not found: value router
+       router.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
+       ^
 ```
 
 Hint: middleware does compose through function composition :-)
