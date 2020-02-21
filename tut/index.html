@@ -47,58 +47,15 @@ Mark de Jong
 ## Mark de Jong
 - Freelance software consultant
 - Functional programming enthusiast
-- Open source contributor
-
-### Find me at
-- Twitter [https://twitter.com/mark_dj](https://twitter.com/mark_dj)
-- Github [https://github.com/Fristi](https://github.com/fristi)
-
----
-
-# Agenda
-
-- What is it?
-- Minimal example
-- Frontends and backends
-- Extensiblity through type classes
-- Deep dive into the internals
-  - Routing
-  - Middleware
-  - Streaming
 
 ---
 
 # http4s: What is it ?
 
-- It's a _minimal library_ for serving HTTP 1.x and 2.x requests!
+- It's a _minimal Scala library_ for serving HTTP 1.x and 2.x requests!
 - Low dependency footprint and flexible setup
 - Descriptive and immutable types
 - Favors functional programming to gain composability and reasoning
-- Testing is easy (no tests kits needed!)
-
----
-
-# cats
-
-> lightweight, modular, and extensible library for functional programming
-
-TODO
-
----
-
-# cats-effect
-
-> a set of typeclasses which characterize general effect types
-
-TODO
-
----
-
-# fs2
-
-> a streaming library for handling large payloads in constant space
-
-TODO
 
 ---
 
@@ -109,8 +66,6 @@ class: center, middle
 ---
 
 # http4s: Minimal example
-
-This uses the http4s-dsl frontend/module (Scala extractors)
 
 ```tut:silent
 val helloWorldService = HttpRoutes.of[IO] {
@@ -134,13 +89,34 @@ resp1.headers
 resp1.as[String].unsafeRunSync()
 ```
 
+---
+
+# http4s: Minimal example
+
 ```tut:silent
 val resp2 = routes.run(Request(Method.GET, Uri.uri("/i-dont-exist"))).unsafeRunSync()
 ```
+
 ```tut
 resp2.status
 resp2.headers
 ```
+
+---
+
+class: center, middle
+
+<h1>Let's build http4s!</h1>
+
+Disclaimer, kind of.. :)
+
+---
+
+# What do you need to handle a HTTP request?
+
+- A function which handles a request and returns a response
+- Decode data from a request
+- Encode data into a response
 
 ---
 
@@ -161,72 +137,201 @@ case class Response[F[_]](
     httpVersion: HttpVersion = HttpVersion.`HTTP/1.1`,
     headers: Headers = Headers.empty,
     body: fs2.Stream[F, Byte] = EmptyBody,
-    attributes: AttributeMap = AttributeMap.empty)
-
+    attributes: AttributeMap = AttributeMap.empty
+)
 ```
 
 ---
 
-# http4s: Run it as a server
+# We need function..!
+
+> A function which handles a request and returns a response
+
+- The function needs to be combined to support multiple endpoints
+- A function can fail due side-effects
+
+---
+
+# Attempt #1 - A pure total function
 
 ```scala
-object Main extends IOApp {
-  def run(args: List[String]): IO[ExitCode] =
-    BlazeServerBuilder[IO]
-      .bindHttp(8080, "localhost")
-      .withHttpApp(routes)
-      .serve
-      .compile
-      .drain
-      .as(ExitCode.Success)
+type Endpoint = Request[IO] => Response[IO]
+```
+
+- ❌ We _cannot_ fail due side-effects
+- ❌ We _cannot_ combine multiple endpoints
+
+---
+
+# Attempt #2 - A pure total function
+
+```scala
+type Endpoint = Request[IO] => IO[Response[IO]]
+```
+
+- ✅ We can fail due side-effects
+- ❌ We _cannot_ combine multiple endpoints
+
+---
+
+
+# Attempt #3 - A pure partial function
+
+```scala
+type Route = PartialFunction[Request[IO], IO[Response[IO]]]
+```
+
+- ✅ We can fail due side-effects
+- ✅ We can combine multiple endpoints
+- ❌ We _cannot_ write *polymorphic* middleware for routes
+
+---
+
+# Monomorphic middlware
+
+```scala
+type Route = PartialFunction[Request[IO], IO[Response[IO]]]
+type Middleware = Route => Route
+```
+
+- ❌ Our effect type is monomorphic which kills support for Monix and ZIO
+- ❌ PartialFunction has limited set of helper functions
+- ❌ We cannot use natural transformations to transform our effect type
+- ✅ Middleware composes through function composition
+
+---
+
+# Polymorphic middlware
+
+```tut:silent
+type Route[F[_]] = Kleisli[OptionT[F, *], Request[F], F[Response[F]]]
+type Middleware[F[_]] = HttpRoutes[F] => HttpRoutes[F]
+```
+
+- ✅ Our effect type is polymorphic now
+- ✅ OptionT and Kleisli have a rich set of instances and helper functions
+- ✅ We can use natural transformations to transform our effect type
+- ✅ Middleware composes through function composition
+
+---
+
+# OptionT
+
+```scala
+final case class OptionT[F[_], A](value: F[Option[A]])
+```
+
+OptionT is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
+
+```tut:silent
+type Route = PartialFunction[Request[IO], IO[Response[IO]]]
+
+val routeA: Route = { case req if req.method == GET => Ok("GET") }
+val routeB: Route = { case req if req.method == POST => Ok("POST") }
+
+def totalRoute(route: Route): Request[IO] => OptionT[IO, Response[IO]] =
+  req => OptionT(route.lift(req).sequence)
+```
+
+---
+
+# OptionT
+
+- It has all kinds of combinators like `flatMap`, `traverse`, `orElse`
+- All kinds of instances like `Monad` and most importantly **SemigroupK**
+
+```scala
+trait OptionTSemigroupK[F[_]] extends SemigroupK[OptionT[F, *]] {
+  implicit def F: Monad[F]
+  def combineK[A](x: OptionT[F, A], y: OptionT[F, A]): OptionT[F, A] =
+    x.orElse(y)
 }
 ```
 
 ---
 
+# SemigroupK
+
+SemigroupK allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
+
+```scala
+trait SemigroupK[F[_]] {
+  def combineK[A](x: F[A], y: F[A]): F[A]
+}
+```
+
+---
+
+# Kleisli
+
+```scala
+final case class Kleisli[F[_], A, B](run: A => F[B])
+```
+
+Kleisli enables composition of functions that return a *monadic* value
+
+```tut
+Kleisli(totalRoute(routeA))
+```
+
+---
+
+# Kleisli
+
+- It has all kinds of combinators like `andThen`, `flatMap`, `traverse`, etc
+- As well it has all kinds of instances like `Monad` and most importantly **SemigroupK**
+
+```scala
+trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, *]] {
+  implicit def F: SemigroupK[F]
+
+  override def combineK[B](x: Kleisli[F, A, B], y: Kleisli[F, A, B]): Kleisli[F, A, B] =
+    Kleisli(a => F.combineK(x.run(a), y.run(a)))
+}
+```
+
+---
+
+# Putting it together
+
+### Lifting into Kleisli
+
+```tut:silent
+val handlerA = Kleisli(totalRoute(routeA))
+val handlerB = Kleisli(totalRoute(routeB))
+```
+
+### Compose into one handler
+
+```tut
+val handler = (handlerA <+> handlerB).orNotFound
+```
+---
+
+# Putting it together
+
+### Run the requests
+
+```tut:silent
+val respA = handler.run(Request(Method.GET, Uri.uri("/"))).unsafeRunSync()
+val respB = handler.run(Request(Method.POST, Uri.uri("/"))).unsafeRunSync()
+```
+
+### Et voila, evaluate the response
+
+```tut
+respA.as[String].unsafeRunSync()
+```
+```tut
+respB.as[String].unsafeRunSync()
+```
+
+
+---
+
 class: center, middle
 
-<h1>Middleware</h1>
-
----
-
-# http4s Middleware
-
-Included middleware
-
-- Authentication
-- Cross Origin Resource Sharing (CORS)
-- Response Compression (GZip)
-- Service Timeout
-- Jsonp
-- Virtual Host
-- Metrics
-
----
-
-class: center, middle
-
-<h1>Extensiblity</h1>
-
----
-
-# http4s Extensiblity through type classes
-
-### Two essential type classes
-
-- `EntityEncoder` for encoding responses like HTML, JSON, XML, etc
-- `EntityDecoder` for decoding requests like form-encoded, JSON, XML, etc
-
-### Common practice in functional programming
-
-- Define a type class
-- Create instances of other type classes like `Contravariant`, `SemigroupK`, `Monoid`, etc
-
----
-
-class: center, middle
-
-<h1>EntityEncoder</h1>
+<h1>Encode data into a response</h1>
 
 ---
 
@@ -245,8 +350,8 @@ trait EntityEncoder[F[_], A] {
 ### Noteable instance: `Contravariant`
 
 ```scala
-implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, ?]] =
-  new Contravariant[EntityEncoder[F, ?]] {
+implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, *]] =
+  new Contravariant[EntityEncoder[F, *]] {
     def contramap[A, B](r: EntityEncoder[F, A])(f: (B) => A): EntityEncoder[F, B] =
       new EntityEncoder[F, B] {
         def toEntity(a: B): Entity[F] = r.toEntity(f(a))
@@ -275,7 +380,7 @@ def contentEncoder[F[_], C <: Content](mediaType: MediaType)
 
 class: center, middle
 
-<h1>EntityDecoder</h1>
+<h1>Decode data from a request</h1>
 
 ---
 
@@ -317,243 +422,6 @@ implicit def entityDecoder[F[_] : Monad](defaultCharset: Charset): EntityDecoder
 
 ---
 
-
-
-# http4s Extensible through type classes
-
-Many Modules already provided
-
-- Twirl
-- Circe
-- Argonaut
-- Json4s
-- Play-json
-- Scalatags
-- Scala-xml
-
----
-
-class: center, middle
-
-<h1>Frontends and backends</h1>
-
----
-
-class: center, middle
-
-<h1>Frontends?</h1>
-
----
-
-# http4s Frontends
-
-Frontends are built upon the core foundation of http4s. It will only use the core types (`HttpRoutes`, `Request[F]`, `Response[F]`)
-
-Examples
-
-- http4s-dsl (Extractors which allow simple endpoints)
-- rho (A self documenting DSL built on http4s)
-
----
-
-# http4s Frontends - examples
-
-### rho
-
-```scala
-val httpService = new RhoService[IO] {
-   GET / "hello" / 'world +? param[Int]("fav") |>> { (world: String, fav: Int) =>
-     Ok(s"Received $fav, $world")
-   }
-}
-```
----
-
-class: center, middle
-
-<h1>Backends?</h1>
-
----
-
-# http4s Backends
-
-- TODO: Netty
-- TODO: Blaze
-- TODO: Tech empower up
-
----
-
-class: center, middle
-
-<h1>Deep dive!</h1>
-
-Internals of http4s
-
----
-
-# http4s: A tale of types
-
-### HttpRoutes type (simplified)
-
-```scala
-type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
-```
-
-- `F[_]` is the effect type (`cats.effect.IO`, monix `Task` or scalaz-zio)
-- `Request[F]` is a HTTP request with a request body `fs2.Stream[F, Byte]`
-- `Response[F]` is a HTTP response with a response body `fs2.Stream[F, Byte]`
-
-### HttpRoutes companion object
-
-```scala
-def of[F[_]](pf: PartialFunction[Request[F], F[Response[F]]])(
-      implicit F: Sync[F]): HttpRoutes[F]
-```
-
-`of` needs to translate `PartialFunction[Request[F], F[Response[F]]]` to `HttpRoutes`. So how?
-
-- TODO: why do we need this translation?
-- TODO: refresher of a `PartialFunction`
-
----
-
-# Kleisli
-
-> Kleisli enables composition of functions that return a monadic value
-
-```scala
-final case class Kleisli[F[_], A, B](run: A => F[B])
-```
-
-It has all kinds of combinators like
-- `andThen`
-- `flatMap`
-- `traverse`
-
-As well it has all kinds of instances like `Monad` and most importantly **SemigroupK**
-
-#### Why?
-*To work with effectful functions*
-
----
-
-# OptionT
-
-> `OptionT[F[_], A]` is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
-
-```scala
-final case class OptionT[F[_], A](value: F[Option[A]])
-```
-
-It has all kinds of combinators like
-- `flatMap`
-- `traverse`
-- `orElse`
-
-As well it has all kinds of instances like `Monad` and most importantly **SemigroupK**
-
-#### Why?
-*To model the fact that the Kleisli arrow is not total*
-
----
-
-# SemigroupK
-
-> SemigroupK[F] allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
-
-```scala
-@typeclass trait SemigroupK[F[_]] { self =>
-  @simulacrum.op("<+>", alias = true)
-  def combineK[A](x: F[A], y: F[A]): F[A]
-}
-```
-
-Why do we need this? *To combine values of F[A]*
-
-
----
-
-# SemigroupK for our Kleisli
-
-Remember our `HttpRoutes` ?
-
-```scala
-type HttpRoutes[F[_]] = Kleisli[OptionT[F, ?], Request[F], Response[F]]
-```
-
-Our `HttpRoutes` has a `SemigroupK` because `F` in `Kleisi[F, A, B]` has a `SemigroupK` instance:
-
-```tut
-implicitly[SemigroupK[OptionT[IO, ?]]]
-```
-
-We also have a `SemigroupK` instance for `Kleisli[OptionT[F, ?], Request[F], Response[F]]`
----
-
-# SemigroupK for our Kleisli/OptionT
-
-### [OptionT](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/OptionT.scala#L443)
-
-```scala
-trait OptionTSemigroupK[F[_]] extends SemigroupK[OptionT[F, ?]] {
-  implicit def F: Monad[F]
-
-  def combineK[A](x: OptionT[F, A], y: OptionT[F, A]): OptionT[F, A] = x.orElse(y)
-}
-```
-
-### [Kleisli](https://github.com/typelevel/cats/blob/master/core/src/main/scala/cats/data/Kleisli.scala#L410)
-
-```scala
-trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, ?]] {
-  implicit def F: SemigroupK[F]
-
-  override def combineK[B](x: Kleisli[F, A, B], y: Kleisli[F, A, B]): Kleisli[F, A, B] =
-    Kleisli(a => F.combineK(x.run(a), y.run(a)))
-}
-```
-
----
-
-### Example of everything together
-
-- TODO: Show it
-
----
-
-
-class: center, middle
-
-![Boom](https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif)
-
----
-
-# Kleisli middleware
-
-```scala
-type Middleware[F[_], A, B, C, D] = Kleisli[F, A, B] => Kleisli[F, C, D]
-type HttpMiddleware[F[_]] =
-    Middleware[OptionT[F, ?], Request[F], Response[F], Request[F], Response[F]]
-```
-
-```tut:silent
-val printlnRequest: HttpMiddleware[IO] = outer => Kleisli { req =>
-  OptionT.liftF(IO.delay(println(s"Tracing request ${req.method} ${req.uri}"))) *>
-    outer.run(req)
-}
-
-val router = printlnRequest(helloWorldService <+> statusService).orNotFound
-
-```
-
-```tut
-router.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
-```
-
-Hint: middleware does compose through function composition :-)
-
----
-
 # Fin
 
 ### Slides
@@ -566,8 +434,7 @@ Hint: middleware does compose through function composition :-)
 - fs2 at [http://fs2.io/](http://fs2.io/)
 
  </textarea>
-    <script src="remark-latest.min.js">
-    </script>
+    <script src="remark-latest.min.js"></script>
     <script>
       var slideshow = remark.create();
     </script>

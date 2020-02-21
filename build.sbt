@@ -1,6 +1,6 @@
-scalaVersion := "2.12.7"
+scalaVersion := "2.12.10"
 
-addCompilerPlugin("org.spire-math" %% "kind-projector" % "0.9.4")
+addCompilerPlugin("org.typelevel" %% "kind-projector" % "0.11.0" cross CrossVersion.full)
 
 scalacOptions ++= Seq(
   "-encoding", "utf-8", // Specify character encoding used by source files.
