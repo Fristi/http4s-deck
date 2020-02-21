@@ -204,8 +204,9 @@ type Middleware = Route => Route
 # Polymorphic middlware
 
 ```tut:silent
-type Route[F[_]] = Kleisli[OptionT[F, *], Request[F], F[Response[F]]]
-type Middleware[F[_]] = HttpRoutes[F] => HttpRoutes[F]
+type Http4sRoute[F[_]] = Kleisli[OptionT[F, *], Request[F], Response[F]]
+type Http4sApp[F[_]] = Kleisli[F, Request[F], Response[F]]
+type Http4sMiddleware[F[_]] = HttpRoutes[F] => HttpRoutes[F]
 ```
 
 - ✅ Our effect type is polymorphic now
@@ -224,12 +225,12 @@ final case class OptionT[F[_], A](value: F[Option[A]])
 OptionT is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
 
 ```tut:silent
-type Route = PartialFunction[Request[IO], IO[Response[IO]]]
+type SimpleRoute = PartialFunction[Request[IO], IO[Response[IO]]]
 
-val routeA: Route = { case req if req.method == GET => Ok("GET") }
-val routeB: Route = { case req if req.method == POST => Ok("POST") }
+val routeA: SimpleRoute = { case req if req.method == GET => Ok("GET") }
+val routeB: SimpleRoute = { case req if req.method == POST => Ok("POST") }
 
-def totalRoute(route: Route): Request[IO] => OptionT[IO, Response[IO]] =
+def totalRoute(route: SimpleRoute): Request[IO] => OptionT[IO, Response[IO]] =
   req => OptionT(route.lift(req).sequence)
 ```
 
@@ -297,14 +298,14 @@ trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, *]] {
 ### Lifting into Kleisli
 
 ```tut:silent
-val handlerA = Kleisli(totalRoute(routeA))
-val handlerB = Kleisli(totalRoute(routeB))
+val handlerA: Http4sRoute[IO] = Kleisli(totalRoute(routeA))
+val handlerB: Http4sRoute[IO] = Kleisli(totalRoute(routeB))
 ```
 
 ### Compose into one handler
 
-```tut
-val handler = (handlerA <+> handlerB).orNotFound
+```tut:silent
+val handler: Http4sApp[IO] = (handlerA <+> handlerB).orNotFound
 ```
 ---
 
