@@ -39,6 +39,9 @@ Mark de Jong
 - Freelance software consultant
 - Functional programming enthusiast
 
+### Website
+[http://vectos.net](http://vectos.net)
+
 ---
 
 # http4s: What is it ?
@@ -102,12 +105,48 @@ res4: org.http4s.Headers = Headers(Content-Type: text/plain; charset=UTF-8)
 ```
 
 ---
+class: center, middle
+
+![uhm](https://media.giphy.com/media/nVV3Aodoc0KGs/giphy.gif)
+
+<h1>Assumptions</h1>
+
+On knowledge..
+
+---
+
+# You know what...
+
+### a type class is
+Just an interface with instances
+
+### a `PartialFunction` is
+It is not total
+
+### a `Monad` is
+A burrito or just a monoid in the category of endofunctors
+
+---
+
+# You know what...
+
+### a `IO` data type is
+It's like `Future` and `Try`, but it's lazy
+
+### a type constructor is `F[_]`
+Examples are `List`, `Option`, `Future`, `IO`, etc
+
+### a type lambda is
+Stuff like `({type L[A] = Either[Int, A]})#L` == `Either[Int, *]`
+
+---
 
 class: center, middle
 
 <h1>Let's build http4s!</h1>
 
 Disclaimer, kind of.. :)
+
 
 ---
 
@@ -119,7 +158,13 @@ Disclaimer, kind of.. :)
 
 ---
 
-# http4s Request/response
+class: center, middle
+
+<h1>Data types</h1>
+
+---
+
+# HTTP Request/response
 
 ```scala
 case class Request[F[_]](
@@ -142,12 +187,17 @@ case class Response[F[_]](
 
 ---
 
-# We need function..!
+class: center, middle
 
-> A function which handles a request and returns a response
+<h1>Routing function</h1>
 
+---
+
+# We need a function..!
+
+- A function which handles a request and returns a response
 - The function needs to be combined to support multiple endpoints
-- A function can fail due side-effects
+- A function can work with side-effects
 
 ---
 
@@ -157,7 +207,7 @@ case class Response[F[_]](
 type Endpoint = Request[IO] => Response[IO]
 ```
 
-- ❌ We _cannot_ fail due side-effects
+- ❌ We _cannot_ work with side-effects
 - ❌ We _cannot_ combine multiple endpoints
 
 ---
@@ -168,7 +218,7 @@ type Endpoint = Request[IO] => Response[IO]
 type Endpoint = Request[IO] => IO[Response[IO]]
 ```
 
-- ✅ We can fail due side-effects
+- ✅ We can work with side-effects
 - ❌ We _cannot_ combine multiple endpoints
 
 ---
@@ -178,34 +228,84 @@ type Endpoint = Request[IO] => IO[Response[IO]]
 
 ```scala
 type Route = PartialFunction[Request[IO], IO[Response[IO]]]
+
+val a: Route = { case req if req.method == GET => Ok("GET") }
+val b: Route = { case req if req.method == POST => Ok("POST") }
+
+val combined = a orElse b
 ```
 
-- ✅ We can fail due side-effects
+- ✅ We can work with side-effects
 - ✅ We can combine multiple endpoints
 - ❌ We _cannot_ write *polymorphic* middleware for routes
 
 ---
 
-# Monomorphic middlware
+class: center, middle
+
+<h1>http4s routing DSL</h1>
+
+---
+
+# Defined with Extractors
+
+```scala
+// case Method.GET -> Root / "test.json" ..
+object -> {
+  def unapply[F[_]](req: Request[F]): Some[(Method, Path)] =
+    Some((req.method, Path(req.pathInfo)))
+}
+```
+
+Extractors allows you define custom pattern matches.
+
+---
+
+class: center, middle
+
+<h1>Middleware</h1>
+
+---
+
+# What is middleware?
+
+- A wrapper around a Route that provides a means
+  - of **manipulating** the `Request` sent to route
+  - and/or **manipulating** the `Response` returned by the route.
+- In some cases, such as `Authentication`, middleware may even **prevent** the service from being called.
+- Also you can implement logging or metrics
+- In Java land these can be seen as interceptors or aspects (AOP)
+
+---
+
+# Monomorphic middleware
 
 ```scala
 type Route = PartialFunction[Request[IO], IO[Response[IO]]]
 type Middleware = Route => Route
 ```
 
-- ❌ Our effect type is monomorphic which kills support for Monix and ZIO
+- ✅ Middleware composes through function composition
 - ❌ PartialFunction has limited set of helper functions
 - ❌ We cannot use natural transformations to transform our effect type
-- ✅ Middleware composes through function composition
+- ❌ Our effect type is specific (monomorphic)
+
 
 ---
 
-# Polymorphic middlware
+# Polymorphic middleware
 
 ```scala
+// Our partial function lifted
+// Simplified: Request[F] => F[Option[Response[F]]]
 type Http4sRoute[F[_]] = Kleisli[OptionT[F, *], Request[F], Response[F]]
+
+// Total routing function
+// Simplified: Request[F] => F[Response[F]]
 type Http4sApp[F[_]] = Kleisli[F, Request[F], Response[F]]
-type Http4sMiddleware[F[_]] = HttpRoutes[F] => HttpRoutes[F]
+
+// Middleware function
+type Http4sMiddleware[F[_]] = Http4sRoute[F] => Http4sRoute[F]
 ```
 
 - ✅ Our effect type is polymorphic now
@@ -215,6 +315,13 @@ type Http4sMiddleware[F[_]] = HttpRoutes[F] => HttpRoutes[F]
 
 ---
 
+class: center, middle
+
+<h1>Functional data types</h1>
+
+And their type classes
+---
+
 # OptionT
 
 ```scala
@@ -222,16 +329,6 @@ final case class OptionT[F[_], A](value: F[Option[A]])
 ```
 
 OptionT is a light wrapper on an `F[Option[A]]` with some convenient methods for working with this nested structure.
-
-```scala
-type SimpleRoute = PartialFunction[Request[IO], IO[Response[IO]]]
-
-val routeA: SimpleRoute = { case req if req.method == GET => Ok("GET") }
-val routeB: SimpleRoute = { case req if req.method == POST => Ok("POST") }
-
-def totalRoute(route: SimpleRoute): Request[IO] => OptionT[IO, Response[IO]] =
-  req => OptionT(route.lift(req).sequence)
-```
 
 ---
 
@@ -260,6 +357,8 @@ trait SemigroupK[F[_]] {
 }
 ```
 
+In other words, it combines the effect `F[_]` instead of the value `A`
+
 ---
 
 # Kleisli
@@ -269,11 +368,6 @@ final case class Kleisli[F[_], A, B](run: A => F[B])
 ```
 
 Kleisli enables composition of functions that return a *monadic* value
-
-```scala
-scala> Kleisli(totalRoute(routeA))
-res5: cats.data.Kleisli[[A]cats.data.OptionT[cats.effect.IO,A],org.http4s.Request[cats.effect.IO],org.http4s.Response[cats.effect.IO]] = Kleisli($$Lambda$7815/1935889426@c99077d)
-```
 
 ---
 
@@ -295,18 +389,48 @@ trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, *]] {
 
 # Putting it together
 
-### Lifting into Kleisli
+### Convert our PartialFunction
 
 ```scala
-val handlerA: Http4sRoute[IO] = Kleisli(totalRoute(routeA))
-val handlerB: Http4sRoute[IO] = Kleisli(totalRoute(routeB))
+object Http4sRoute {
+  def of(route: PartialFunction[Request[IO], IO[Response[IO]]]): Http4sRoute[IO] =
+    Kleisli(req => OptionT(route.lift(req).sequence))
+}
+
 ```
+
+1. `route.lift` - Defined on `PartialFunction[A, B]` returns `A => Option[B]`
+2. Apply lift so it's `Option[B]`
+3. Flip the effect with `Traverse.sequence`. From `Option[IO[Resp]]` to `IO[Option[Resp]]`
+4. Put it into a `OptionT`
+5. `Kleisli` wraps this effectful function
+
+---
+
+# Putting it together
+
+### Define some routes
+
+```scala
+val routeA: Http4sRoute[IO] = Http4sRoute.of {
+  case req if req.method == GET => Ok("GET route")
+}
+
+val routeB: Http4sRoute[IO] = Http4sRoute.of {
+  case req if req.method == POST => Ok("POST route")
+}
+```
+
+---
+
+# Putting it together
 
 ### Compose into one handler
 
 ```scala
-val handler: Http4sApp[IO] = (handlerA <+> handlerB).orNotFound
+val handler: Http4sApp[IO] = (routeA combineK routeB).orNotFound
 ```
+
 ---
 
 # Putting it together
@@ -322,68 +446,30 @@ val respB = handler.run(Request(Method.POST, Uri.uri("/"))).unsafeRunSync()
 
 ```scala
 scala> respA.as[String].unsafeRunSync()
-res6: String = GET
+res10: String = GET route
 ```
 ```scala
 scala> respB.as[String].unsafeRunSync()
-res7: String = POST
-```
-
-
----
-
-class: center, middle
-
-<h1>Encode data into a response</h1>
-
----
-
-# `EntityEncoder` type class
-
-### Definition (simpified)
-
-```scala
-final case class Entity[+F[_]](body: fs2.Stream[F, Byte], length: Option[Long])
-trait EntityEncoder[F[_], A] {
-  def toEntity(a: A): Entity[F]
-  def headers: Headers
-}
-```
-
-### Noteable instance: `Contravariant`
-
-```scala
-implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, *]] =
-  new Contravariant[EntityEncoder[F, *]] {
-    def contramap[A, B](r: EntityEncoder[F, A])(f: (B) => A): EntityEncoder[F, B] =
-      new EntityEncoder[F, B] {
-        def toEntity(a: B): Entity[F] = r.toEntity(f(a))
-        def headers: Headers = r.headers
-      }
-  }
-```
-
----
-
-# Twirl `EntityEncoder`
-
-```scala
-implicit def xmlContentEncoder[F[_]](implicit charset: Charset): EntityEncoder[F, Xml] =
-  contentEncoder(MediaType.application.xml)
-
-def contentEncoder[F[_], C <: Content](mediaType: MediaType)
-                                      (implicit charset: Charset): EntityEncoder[F, C] =
-  EntityEncoder
-    .stringEncoder[F]
-    .contramap[C](_.body)
-    .withContentType(`Content-Type`(mediaType, charset))
+res11: String = POST route
 ```
 
 ---
 
 class: center, middle
 
-<h1>Decode data from a request</h1>
+<h1>What is this `.as` ?</h1>
+
+![ass](https://media.giphy.com/media/gXmbBhZyCkZjO/giphy.gif)
+
+```scala
+final def as[A](implicit F: MonadError[F, Throwable], D: EntityDecoder[F, A]): F[A]
+```
+
+---
+
+class: center, middle
+
+<h1>Decode data from a request/response</h1>
 
 ---
 
@@ -399,7 +485,7 @@ trait EntityDecoder[F[_], T] { self =>
 }
 ```
 
-Noteable instance: `SemigroupK`
+Decoders have (covariant) `Functor` and `Monad` instance
 
 ---
 
@@ -410,18 +496,97 @@ Noteable instance: `SemigroupK`
 ```scala
 case class UrlForm (values: Map[String, List[String]])
 
-def decodeString(charset: Charset)(urlForm: String): Either[MalformedMessageBodyFailure, UrlForm] =
-  ??? //omitted urlencoded parsing
+//omitted urlencoded parsing
+def decodeString: Either[MalformedMessageBodyFailure, UrlForm] = ???
 
-implicit def entityDecoder[F[_] : Monad](defaultCharset: Charset): EntityDecoder[F, UrlForm] =
+implicit def entityDecoder[F[_] : Monad]: EntityDecoder[F, UrlForm] =
   EntityDecoder.decodeBy(MediaType.application.`x-www-form-urlencoded`) { m =>
     EitherT(
       EntityDecoder
-        .decodeString(m) // folds the `fs.stream[F, Byte]` into a F[String]
-        .map(decodeString(m.charset.getOrElse(defaultCharset)))
+        .decodeString(m) // converts `fs2.Stream[F, Byte]` into a F[String]
+        .map(decodeString)
     )
   }
 ```
+
+---
+
+class: center, middle
+
+<h1>Encode data into a request/response</h1>
+
+---
+
+# `EntityEncoder` type class
+
+### Definition (simpified)
+
+```scala
+final case class Entity[+F[_]](body: fs2.Stream[F, Byte], length: Option[Long])
+trait EntityEncoder[F[_], A] {
+  def toEntity(a: A): Entity[F]
+  def headers: Headers
+}
+```
+
+---
+
+# Encoders have a contravariant functor
+
+```scala
+trait Contravariant[F[_]] {
+  def contramap[A, B](fa: F[A])(f: B => A): F[B]
+}
+```
+
+---
+
+# Contravariant functor for `EntityEncoder`
+
+```scala
+implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, *]] =
+  new Contravariant[EntityEncoder[F, *]] {
+    def contramap[A, B](r: EntityEncoder[F, A])(f: (B) => A): EntityEncoder[F, B] =
+      new EntityEncoder[F, B] {
+        def toEntity(a: B): Entity[F] = r.toEntity(f(a))
+        def headers: Headers = r.headers
+      }
+  }
+```
+
+---
+
+# XML `EntityEncoder`
+
+```scala
+implicit def xmlContentEncoder[F[_]](implicit charset: Charset): EntityEncoder[F, Xml] =
+  contentEncoder(MediaType.application.xml)
+
+def contentEncoder[F[_], C <: Content](mediaType: MediaType)
+                                      (implicit charset: Charset): EntityEncoder[F, C] =
+  EntityEncoder
+    .stringEncoder[F]
+    .contramap[C](_.body)
+    .withContentType(`Content-Type`(mediaType, charset))
+```
+
+---
+
+# Take aways
+
+Take inspiration from other libraries and read code to _learn_
+
+### Data types
+
+- Basic building blocks from cats (`Monad`, `SemigroupK`, etc) are powerful
+- Define data types and discover type class instances
+
+### Type class instances
+
+- Proof your type class instances
+- Define new type classes (e.g.: encoding/decoding data)
+- Define instances for type classes by applying constraints
+
 
 ---
 
