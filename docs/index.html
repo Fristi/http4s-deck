@@ -318,7 +318,7 @@ type Http4sRoute[F[_]] = Kleisli[OptionT[F, *], Request[F], Response[F]]
 type Http4sApp[F[_]] = Kleisli[F, Request[F], Response[F]]
 
 // Middleware function
-type Http4sMiddleware[F[_]] = Http4sRoute[F] => Http4sRoute[F]
+type Http4sMiddleware[F[_]] = Http4sApp[F] => Http4sApp[F]
 ```
 
 - ✅ Our effect type is polymorphic now
@@ -513,6 +513,20 @@ object Http4sRoute {
 
 # Putting it together
 
+### Logging middleware
+
+```scala
+def logRequest(req: Request[IO]): IO[Unit] =
+  IO(println(s"Incoming request ${req.method} ${req.uri}"))
+
+val logging: Http4sMiddleware[IO] = inner =>
+  Kleisli(req => logRequest(req) *> inner.run(req))
+```
+
+---
+
+# Putting it together
+
 ### Define some routes
 
 ```scala
@@ -532,7 +546,7 @@ val routeB: Http4sRoute[IO] = Http4sRoute.of {
 ### Compose into one handler
 
 ```scala
-val handler: Http4sApp[IO] = (routeA combineK routeB).orNotFound
+val handler: Http4sApp[IO] = logging((routeA combineK routeB).orNotFound)
 ```
 
 ---
@@ -543,19 +557,25 @@ val handler: Http4sApp[IO] = (routeA combineK routeB).orNotFound
 
 ```scala
 val reqA: Request[IO] = Request(GET, Uri.uri("/"))
-val respA: Response[IO] = handler.run(reqA).unsafeRunSync()
-
 val reqB: Request[IO] = Request(POST, Uri.uri("/"))
-val respB: Response[IO] = handler.run(reqB).unsafeRunSync()
 ```
 
 ### Et voila, evaluate the response
 
 ```scala
+scala> val respA: Response[IO] = handler.run(reqA).unsafeRunSync()
+Incoming request GET /
+respA: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 9))
+
 scala> respA.as[String].unsafeRunSync()
 res17: String = GET route
 ```
+
 ```scala
+scala> val respB: Response[IO] = handler.run(reqB).unsafeRunSync()
+Incoming request POST /
+respB: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 10))
+
 scala> respB.as[String].unsafeRunSync()
 res18: String = POST route
 ```
@@ -650,7 +670,7 @@ trait Contravariant[F[_]] {
 
 #### Example instance
 
-```
+```scala
 case class Person(name: String, age: Int)
 
 object Person {
