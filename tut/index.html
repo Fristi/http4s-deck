@@ -27,6 +27,7 @@ import cats.data._
 import cats.implicits._
 import cats.effect._
 import scala.concurrent.ExecutionContext.Implicits.global
+import scala.util.Try
 
 implicit val cs: ContextShift[IO] = IO.contextShift(global)
 implicit val timer: Timer[IO] = IO.timer(global)
@@ -84,7 +85,8 @@ val routes = helloWorldService.orNotFound
 # http4s: Minimal example
 
 ```tut:silent
-val resp1 = routes.run(Request(Method.GET, Uri.uri("/hello/world"))).unsafeRunSync()
+val req1: Request[IO] = Request(GET, Uri.uri("/hello/world"))
+val resp1: Response[IO] = routes.run(req1).unsafeRunSync()
 ```
 ```tut
 resp1.status
@@ -97,7 +99,8 @@ resp1.as[String].unsafeRunSync()
 # http4s: Minimal example
 
 ```tut:silent
-val resp2 = routes.run(Request(Method.GET, Uri.uri("/i-dont-exist"))).unsafeRunSync()
+val req2: Request[IO] = Request(GET, Uri.uri("/i-dont-exist"))
+val resp2: Response[IO] = routes.run(req2).unsafeRunSync()
 ```
 
 ```tut
@@ -138,7 +141,7 @@ It's like `Future` and `Try`, but it's lazy
 Examples are `List`, `Option`, `Future`, `IO`, etc
 
 ### a type lambda is
-Stuff like `({type L[A] = Either[Int, A]})#L` == `Either[Int, *]`
+`Either[Int, *]` is a inlined `type IntOr[A] = Either[Int, A]`
 
 ---
 
@@ -250,6 +253,17 @@ class: center, middle
 
 # Defined with Extractors
 
+### Remember ?
+
+```scala
+HttpRoutes.of[IO] {
+  case GET -> Root / "hello" / name =>
+    Ok(s"Hello, $name.")
+}
+```
+
+### Extractor of `->`
+
 ```scala
 // case Method.GET -> Root / "test.json" ..
 object -> {
@@ -333,6 +347,38 @@ OptionT is a light wrapper on an `F[Option[A]]` with some convenient methods for
 
 ---
 
+# OptionT - Example
+
+```tut:silent
+def findInSalesforce(id: Int): OptionT[IO, String] =
+  if(id % 2 == 0) OptionT.some("For sales") else OptionT.none
+
+def findInSap(id: Int): OptionT[IO, String] =
+  if(id % 3 == 0) OptionT.some("SAPPPP") else OptionT.none
+```
+
+---
+
+# OptionT - Example
+
+### It's a `Monad`
+
+```tut
+(for {
+  a <- findInSalesforce(2)
+  b <- findInSap(3)
+} yield (a, b)).value.unsafeRunSync()
+```
+
+### It can `orElse`
+
+```tut
+(findInSalesforce(3) orElse findInSap(9)).value.unsafeRunSync()
+```
+
+
+---
+
 # OptionT
 
 - It has all kinds of combinators like `flatMap`, `traverse`, `orElse`
@@ -350,7 +396,7 @@ trait OptionTSemigroupK[F[_]] extends SemigroupK[OptionT[F, *]] {
 
 # SemigroupK
 
-SemigroupK allows two F[A] values to be combined, for any A. The combination operation just depends on the structure of F, but not the structure of A.
+SemigroupK allows two `F[A]` values to be combined, for any `A`. The combination operation just depends on the structure of F, but not the structure of A.
 
 ```scala
 trait SemigroupK[F[_]] {
@@ -372,7 +418,39 @@ Kleisli enables composition of functions that return a *monadic* value
 
 ---
 
-# Kleisli
+# Kleisli - Composition
+
+It's like function composition, but with effectful functions:
+
+```tut:silent
+val fromString: Kleisli[Option, String, Int] =
+  Kleisli(str => Try(str.toInt).toOption)
+
+val isEven: Kleisli[Option, Int, Int] =
+  Kleisli(i => if(i % 2 == 0) Some(i) else None)
+
+val composed = fromString andThen isEven
+```
+
+---
+
+# Kleisli - Composition
+
+```tut
+composed.run("2")
+```
+
+```tut
+composed.run("not a int")
+```
+
+```tut
+composed.run("1")
+```
+
+---
+
+# Kleisli - Combinators and instances
 
 - It has all kinds of combinators like `andThen`, `flatMap`, `traverse`, etc
 - As well it has all kinds of instances like `Monad` and most importantly **SemigroupK**
@@ -385,6 +463,26 @@ trait KleisliSemigroupK[F[_], A] extends SemigroupK[Kleisli[F, A, *]] {
     Kleisli(a => F.combineK(x.run(a), y.run(a)))
 }
 ```
+
+---
+
+# Kleisli - SemigroupK
+
+```tut:silent
+val isOdd: Kleisli[Option, Int, Int] =
+  Kleisli(i => if(i % 1 == 0) Some(i) else None)
+
+val composed = fromString andThen (isEven combineK isOdd)
+```
+
+```tut
+composed.run("1")
+```
+
+```tut
+composed.run("2")
+```
+
 
 ---
 
@@ -439,8 +537,11 @@ val handler: Http4sApp[IO] = (routeA combineK routeB).orNotFound
 ### Run the requests
 
 ```tut:silent
-val respA = handler.run(Request(Method.GET, Uri.uri("/"))).unsafeRunSync()
-val respB = handler.run(Request(Method.POST, Uri.uri("/"))).unsafeRunSync()
+val reqA: Request[IO] = Request(GET, Uri.uri("/"))
+val respA: Response[IO] = handler.run(reqA).unsafeRunSync()
+
+val reqB: Request[IO] = Request(POST, Uri.uri("/"))
+val respB: Response[IO] = handler.run(reqB).unsafeRunSync()
 ```
 
 ### Et voila, evaluate the response
@@ -532,15 +633,28 @@ trait EntityEncoder[F[_], A] {
 
 # Encoders have a contravariant functor
 
+#### Type class
+
 ```scala
 trait Contravariant[F[_]] {
   def contramap[A, B](fa: F[A])(f: B => A): F[B]
 }
 ```
 
+#### Example instance
+
+```
+case class Person(name: String, age: Int)
+
+object Person {
+  implicit val ordering: Ordering[Person] =
+    Contravariant[Ordering].contramap(_.age)
+}
+```
+
 ---
 
-# Contravariant functor for `EntityEncoder`
+# `Contravariant` for `EntityEncoder`
 
 ```scala
 implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, *]] =
@@ -599,6 +713,7 @@ Take inspiration from other libraries and read code to _learn_
 - cats at [https://typelevel.org/cats/](https://typelevel.org/cats/)
 - cats-effect at [https://typelevel.org/cats-effect/](https://typelevel.org/cats-effect/)
 - fs2 at [http://fs2.io/](http://fs2.io/)
+- kind-projector at [https://github.com/typelevel/kind-projector](https://github.com/typelevel/kind-projector)
 
  </textarea>
     <script src="remark-latest.min.js"></script>
