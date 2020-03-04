@@ -44,6 +44,42 @@ Mark de Jong
 
 ---
 
+class: center, middle
+
+![uhm](https://media.giphy.com/media/nVV3Aodoc0KGs/giphy.gif)
+
+<h1>Assumptions</h1>
+
+On knowledge..
+
+---
+
+# You know what...
+
+### a type class is
+Just an interface with instances
+
+### a `PartialFunction` is
+It is not total (but in Scala it is..)
+
+### a `Monad` is
+A burrito or just a monoid in the category of endofunctors
+
+---
+
+# You know what...
+
+### a `IO` data type is
+It's like `Future` and `Try`, but it's lazy
+
+### a type constructor is `F[_]`
+Examples are `List`, `Option`, `Future`, `IO`, etc
+
+### a type lambda is
+`Either[Int, *]` is a inlined `type IntOr[A] = Either[Int, A]`
+
+---
+
 # http4s: What is it ?
 
 - It's a _minimal Scala library_ for serving HTTP 1.x and 2.x requests!
@@ -107,47 +143,43 @@ res4: org.http4s.Headers = Headers(Content-Type: text/plain; charset=UTF-8)
 ```
 
 ---
+
 class: center, middle
 
-![uhm](https://media.giphy.com/media/nVV3Aodoc0KGs/giphy.gif)
-
-<h1>Assumptions</h1>
-
-On knowledge..
+<h1>http4s routing DSL</h1>
 
 ---
 
-# You know what...
+# Defined with Extractors
 
-### a type class is
-Just an interface with instances
+### Remember ?
 
-### a `PartialFunction` is
-It is not total
+```scala
+HttpRoutes.of[IO] {
+  case GET -> Root / "hello" / name =>
+    Ok(s"Hello, $name.")
+}
+```
 
-### a `Monad` is
-A burrito or just a monoid in the category of endofunctors
+### Extractor of `->`
 
----
+```scala
+// case Method.GET -> Root / "test.json" ..
+object -> {
+  def unapply[F[_]](req: Request[F]): Some[(Method, Path)] =
+    Some((req.method, Path(req.pathInfo)))
+}
+```
 
-# You know what...
-
-### a `IO` data type is
-It's like `Future` and `Try`, but it's lazy
-
-### a type constructor is `F[_]`
-Examples are `List`, `Option`, `Future`, `IO`, etc
-
-### a type lambda is
-`Either[Int, *]` is a inlined `type IntOr[A] = Either[Int, A]`
+Extractors allows you define custom pattern matches.
 
 ---
 
 class: center, middle
 
-<h1>Let's build http4s!</h1>
+<h1>Let's try to build http4s!</h1>
 
-Disclaimer, kind of.. :)
+The gist of it, kind of.. :)
 
 
 ---
@@ -239,92 +271,25 @@ val combined = a orElse b
 
 - ✅ We can work with side-effects
 - ✅ We can combine multiple endpoints
-- ❌ We _cannot_ write *polymorphic* middleware for routes
+- ❌ `PartialFunction` extends `(A => B)`
 
 ---
 
-class: center, middle
-
-<h1>http4s routing DSL</h1>
-
----
-
-# Defined with Extractors
-
-### Remember ?
+# Attempt #4 - Kleisli equiped with OptionT
 
 ```scala
-HttpRoutes.of[IO] {
-  case GET -> Root / "hello" / name =>
-    Ok(s"Hello, $name.")
-}
-```
-
-### Extractor of `->`
-
-```scala
-// case Method.GET -> Root / "test.json" ..
-object -> {
-  def unapply[F[_]](req: Request[F]): Some[(Method, Path)] =
-    Some((req.method, Path(req.pathInfo)))
-}
-```
-
-Extractors allows you define custom pattern matches.
-
----
-
-class: center, middle
-
-<h1>Middleware</h1>
-
----
-
-# What is middleware?
-
-- A wrapper around a Route that provides a means
-  - of **manipulating** the `Request` sent to route
-  - and/or **manipulating** the `Response` returned by the route.
-- In some cases, such as `Authentication`, middleware may even **prevent** the service from being called.
-- Also you can implement logging or metrics
-- In Java land these can be seen as interceptors or aspects (AOP)
-
----
-
-# Monomorphic middleware
-
-```scala
-type Route = PartialFunction[Request[IO], IO[Response[IO]]]
-type Middleware = Route => Route
-```
-
-- ✅ Middleware composes through function composition
-- ❌ PartialFunction has limited set of helper functions
-- ❌ We cannot use natural transformations to transform our effect type
-- ❌ Our effect type is specific (monomorphic)
-
-
----
-
-# Polymorphic middleware
-
-```scala
-// Our partial function lifted
-// Simplified: Request[F] => F[Option[Response[F]]]
-type Http4sRoute[F[_]] = Kleisli[OptionT[F, *], Request[F], Response[F]]
+// Partial routing function
+// Simplified: Request[IO] => IO[Option[Response[IO]]]
+type Http4sRoute = Kleisli[OptionT[IO, *], Request[IO], Response[IO]]
 
 // Total routing function
-// Simplified: Request[F] => F[Response[F]]
-type Http4sApp[F[_]] = Kleisli[F, Request[F], Response[F]]
-
-// Middleware function
-type Http4sMiddleware[F[_]] = Http4sApp[F] => Http4sApp[F]
+// Simplified: Request[IO] => IO[Response[IO]]
+type Http4sApp = Kleisli[IO, Request[IO], Response[IO]]
 ```
 
-- ✅ Our effect type is polymorphic now
+- ✅ We got rid of `Partialfunction`
 - ✅ OptionT and Kleisli have a rich set of instances and helper functions
-- ✅ We can use natural transformations to transform our effect type
-- ✅ Middleware composes through function composition
+- ✅ Http4sRoute can be combined, while Http4sApp cannot
 
 ---
 
@@ -366,14 +331,14 @@ scala> (for {
      |   a <- findInSalesforce(2)
      |   b <- findInSap(3)
      | } yield (a, b)).value.unsafeRunSync()
-res10: Option[(String, String)] = Some((For sales,SAPPPP))
+res9: Option[(String, String)] = Some((For sales,SAPPPP))
 ```
 
 ### It can `orElse`
 
 ```scala
 scala> (findInSalesforce(3) orElse findInSap(9)).value.unsafeRunSync()
-res11: Option[String] = Some(SAPPPP)
+res10: Option[String] = Some(SAPPPP)
 ```
 
 
@@ -438,17 +403,17 @@ val composed = fromString andThen isEven
 
 ```scala
 scala> composed.run("2")
-res12: Option[Int] = Some(2)
+res11: Option[Int] = Some(2)
 ```
 
 ```scala
 scala> composed.run("not a int")
-res13: Option[Int] = None
+res12: Option[Int] = None
 ```
 
 ```scala
 scala> composed.run("1")
-res14: Option[Int] = None
+res13: Option[Int] = None
 ```
 
 ---
@@ -480,12 +445,12 @@ val composed = fromString andThen (isEven combineK isOdd)
 
 ```scala
 scala> composed.run("1")
-res15: Option[Int] = Some(1)
+res14: Option[Int] = Some(1)
 ```
 
 ```scala
 scala> composed.run("2")
-res16: Option[Int] = Some(2)
+res15: Option[Int] = Some(2)
 ```
 
 
@@ -497,7 +462,7 @@ res16: Option[Int] = Some(2)
 
 ```scala
 object Http4sRoute {
-  def of(route: PartialFunction[Request[IO], IO[Response[IO]]]): Http4sRoute[IO] =
+  def of(route: PartialFunction[Request[IO], IO[Response[IO]]]): Http4sRoute =
     Kleisli(req => OptionT(route.lift(req).sequence))
 }
 
@@ -513,28 +478,14 @@ object Http4sRoute {
 
 # Putting it together
 
-### Logging middleware
-
-```scala
-def logRequest(req: Request[IO]): IO[Unit] =
-  IO(println(s"Incoming request ${req.method} ${req.uri}"))
-
-val logging: Http4sMiddleware[IO] = inner =>
-  Kleisli(req => logRequest(req) *> inner.run(req))
-```
-
----
-
-# Putting it together
-
 ### Define some routes
 
 ```scala
-val routeA: Http4sRoute[IO] = Http4sRoute.of {
+val routeA: Http4sRoute = Http4sRoute.of {
   case req if req.method == GET => Ok("GET route")
 }
 
-val routeB: Http4sRoute[IO] = Http4sRoute.of {
+val routeB: Http4sRoute = Http4sRoute.of {
   case req if req.method == POST => Ok("POST route")
 }
 ```
@@ -546,7 +497,10 @@ val routeB: Http4sRoute[IO] = Http4sRoute.of {
 ### Compose into one handler
 
 ```scala
-val handler: Http4sApp[IO] = logging((routeA combineK routeB).orNotFound)
+def seal(route: Http4sRoute): Http4sApp =
+  Kleisli(request => route.run(request).getOrElseF(NotFound()))
+
+val handler: Http4sApp = seal(routeA combineK routeB)
 ```
 
 ---
@@ -564,20 +518,18 @@ val reqB: Request[IO] = Request(POST, Uri.uri("/"))
 
 ```scala
 scala> val respA: Response[IO] = handler.run(reqA).unsafeRunSync()
-Incoming request GET /
 respA: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 9))
 
 scala> respA.as[String].unsafeRunSync()
-res17: String = GET route
+res16: String = GET route
 ```
 
 ```scala
 scala> val respB: Response[IO] = handler.run(reqB).unsafeRunSync()
-Incoming request POST /
 respB: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 10))
 
 scala> respB.as[String].unsafeRunSync()
-res18: String = POST route
+res17: String = POST route
 ```
 
 ---
@@ -681,7 +633,7 @@ object Person {
 
 ---
 
-# `Contravariant` for `EntityEncoder`
+# Contravariant for EntityEncoder
 
 ```scala
 implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, *]] =
