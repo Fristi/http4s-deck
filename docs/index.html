@@ -511,23 +511,20 @@ val handler: Http4sApp = seal(routeA combineK routeB)
 
 ```scala
 val reqA: Request[IO] = Request(GET, Uri.uri("/"))
+val respA: Response[IO] = handler.run(reqA).unsafeRunSync()
+
 val reqB: Request[IO] = Request(POST, Uri.uri("/"))
+val respB: Response[IO] = handler.run(reqB).unsafeRunSync()
 ```
 
 ### Et voila, evaluate the response
 
 ```scala
-scala> val respA: Response[IO] = handler.run(reqA).unsafeRunSync()
-respA: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 9))
-
 scala> respA.as[String].unsafeRunSync()
 res16: String = GET route
 ```
 
 ```scala
-scala> val respB: Response[IO] = handler.run(reqB).unsafeRunSync()
-respB: org.http4s.Response[cats.effect.IO] = Response(status=200, headers=Headers(Content-Type: text/plain; charset=UTF-8, Content-Length: 10))
-
 scala> respB.as[String].unsafeRunSync()
 res17: String = POST route
 ```
@@ -541,7 +538,7 @@ class: center, middle
 ![ass](https://media.giphy.com/media/gXmbBhZyCkZjO/giphy.gif)
 
 ```scala
-final def as[A](implicit F: MonadError[F, Throwable], D: EntityDecoder[F, A]): F[A]
+def as[A](implicit F: MonadError[F, Throwable], D: EntityDecoder[F, A]): F[A]
 ```
 
 ---
@@ -564,7 +561,7 @@ trait EntityDecoder[F[_], T] { self =>
 }
 ```
 
-Decoders have (covariant) `Functor` and `Monad` instance
+Decoders have (covariant) `Functor`, `SemigroupK` and `Monad` instance
 
 ---
 
@@ -651,15 +648,11 @@ implicit def entityEncoderContravariant[F[_]]: Contravariant[EntityEncoder[F, *]
 # XML `EntityEncoder`
 
 ```scala
-implicit def xmlContentEncoder[F[_]](implicit charset: Charset): EntityEncoder[F, Xml] =
-  contentEncoder(MediaType.application.xml)
-
-def contentEncoder[F[_], C <: Content](mediaType: MediaType)
-                                      (implicit charset: Charset): EntityEncoder[F, C] =
+def xmlEncoder[F[_]]: EntityEncoder[F, Xml] =
   EntityEncoder
     .stringEncoder[F]
-    .contramap[C](_.body)
-    .withContentType(`Content-Type`(mediaType, charset))
+    .contramap[Xml](_.body)
+    .withContentType(`Content-Type`(MediaType.application.xml, Charset.`UTF-8`))
 ```
 
 ---
@@ -670,11 +663,12 @@ Take inspiration from other libraries and read code to _learn_
 
 ### Data types
 
-- Basic building blocks from cats (`Monad`, `SemigroupK`, etc) are powerful
+- Basic building blocks from cats (`OptionT`, `Kleisli`, etc) are powerful
 - Define data types and discover type class instances
 
 ### Type class instances
 
+- Basic building blocks from cats (`Monad`, `SemigroupK`, etc) are powerful
 - Proof your type class instances
 - Define new type classes (e.g.: encoding/decoding data)
 - Define instances for type classes by applying constraints
